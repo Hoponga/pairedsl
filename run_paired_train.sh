@@ -1,0 +1,33 @@
+#!/bin/bash
+python -m train \
+--xpid=ued-MultiGrid-GoalLastAdversarial-v0-paired-lstm256ae-lr0.0001-epoch5-mb1-v0.5-henv0.0-ha0.0-tl_0 \
+--env_name=MultiGrid-GoalLastAdversarial-v0 \
+--use_gae=True \
+--gamma=0.995 \
+--gae_lambda=0.95 \
+--seed=88 \
+--recurrent_arch=lstm \
+--recurrent_agent=True \
+--recurrent_adversary_env=True \
+--recurrent_hidden_size=256 \
+--lr=0.0001 \
+--num_steps=256 \
+--num_processes=32 \
+--num_env_steps=1000000000 \
+--ppo_epoch=5 \
+--num_mini_batch=1 \
+--entropy_coef=0.0 \
+--value_loss_coef=0.5 \
+--clip_param=0.2 \
+--clip_value_loss=True \
+--adv_entropy_coef=0.0 \
+--algo=ppo \
+--ued_algo=paired \
+--log_interval=10 \
+--screenshot_interval=1000 \
+--log_grad_norm=True \
+--handle_timelimits=True \
+--test_env_names=MultiGrid-SixteenRooms-v0,MultiGrid-Labyrinth-v0,MultiGrid-Maze-v0 \
+--log_dir=~/logs/paired \
+--log_action_complexity=True \
+--checkpoint=True

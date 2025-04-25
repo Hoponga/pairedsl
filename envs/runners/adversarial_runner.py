@@ -253,7 +253,7 @@ class AdversarialRunner(object):
                             infos[i]['truncated'] = True
                             infos[i]['truncated_obs'] = get_obs_at_index(obs, i)
 
-                done = np.ones_like(done, dtype=np.float)
+                done = np.ones_like(done, dtype=float)
 
             for i, info in enumerate(infos):
                 if 'episode' in info.keys():

@@ -132,6 +132,7 @@ if __name__ == '__main__':
     steps_previous = 0
     for j in range(initial_update_count, num_updates):
         stats = train_runner.run()
+        print(stats)
 
         # === Perform logging ===
         if train_runner.num_updates <= last_logged_update_at_restart:
