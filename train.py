@@ -5,6 +5,7 @@ import timeit
 import logging
 import signal
 from arguments import parser
+import wandb
 
 import torch
 import gym
@@ -39,6 +40,7 @@ if __name__ == '__main__':
     screenshot_dir = os.path.join(log_dir, args.xpid, 'screenshots')
     if not os.path.exists(screenshot_dir):
         os.makedirs(screenshot_dir, exist_ok=True)
+    wandb.init(project='pairedsl',config=vars(args)) 
 
     def log_stats(stats):
         filewriter.log(stats)
@@ -132,7 +134,7 @@ if __name__ == '__main__':
     steps_previous = 0
     for j in range(initial_update_count, num_updates):
         stats = train_runner.run()
-        print(stats)
+        wandb.log(stats, step=train_runner.num_updates)
 
         # === Perform logging ===
         if train_runner.num_updates <= last_logged_update_at_restart:
