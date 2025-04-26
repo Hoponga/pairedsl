@@ -1,0 +1,6 @@
+Metadata-Version: 2.1
+Name: pairedcl
+Version: 0.0.1
+Requires-Dist: torch>=1.13
+Requires-Dist: torchvision>=0.14
+Requires-Dist: gym
