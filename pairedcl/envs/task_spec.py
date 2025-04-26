@@ -6,7 +6,7 @@ import torch
 from torchvision import transforms as T
 from torch.utils.data import Dataset
 
-from ..data.datasets import get_base_dataset          # you will implement
+from pairedcl.data.datasets import get_base_dataset          # you will implement
 
 # ---------- helper registry ----------
 _transform_registry = {
@@ -26,6 +26,8 @@ class TransformSpec:
     def build(self):
         fn = _transform_registry[self.name]
         return fn(**self.params) if callable(fn) else fn
+
+
 
 @dataclass(frozen=True)
 class TaskSpec:
@@ -47,8 +49,8 @@ class TaskSpec:
 # ---------- thin wrapper ----------
 class _TransformedDataset(Dataset):
     def __init__(self, root_ds: Dataset, transform):
-        self.root_ds, self.transform = root_ds, transform
-    def __len__(self): return len(self.root_ds)
+        self.dataset, self.transform = root_ds, transform
+    def __len__(self): return len(self.dataset)
     def __getitem__(self, idx):
-        x, y = self.root_ds[idx]
+        x, y = self.dataset[idx]
         return self.transform(x), y

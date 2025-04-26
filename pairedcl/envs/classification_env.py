@@ -30,8 +30,8 @@ class ClassificationEnv(gym.Env):
 
         # observation / action spaces
         sample, _ = next(iter(self.loader))
-        C, H, W = sample.shape[1:]
-        self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(self.batch_size, C, H, W), dtype="float32")
+        data_shape = sample.shape[1:]
+        self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(self.batch_size, *data_shape), dtype="float32")
         n_classes = len(set(ds.dataset.targets))  # works for torch Subset as well
         self.action_space = spaces.MultiDiscrete([n_classes] * self.batch_size)
 
@@ -50,6 +50,6 @@ class ClassificationEnv(gym.Env):
         reward = acc
         self.obs, self.labels = next(self.iterator)
         self.obs, self.labels = self.obs.to(self.device), self.labels.to(self.device)
-        return self.obs, reward, False, {"accuracy": acc}
+        return self.obs, reward, False, {"accuracy": acc, 'labels': self.labels}
 
     def render(self, mode="human"): pass
