@@ -149,7 +149,7 @@ def get_parser() -> argparse.ArgumentParser:
                    help="batches to train classifier per task")
     g.add_argument("--rollout", type=int, default=16,
                    help="tasks per PPO update")
-    g.add_argument("--epochs", type=int, default=100)
+    g.add_argument("--epochs", type=int, default=10000)
 
     # -------- logging / I/O -------------------------------------------------
     g = parser.add_argument_group("Logging & checkpoints")

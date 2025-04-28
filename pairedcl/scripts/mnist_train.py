@@ -14,6 +14,7 @@ import sys, pprint
 import argparse, time, math, random
 from pathlib import Path
 import torch, torch.nn as nn, torch.optim as optim
+import wandb
 
 # --- import your modules -----------------------------------------------------
 from pairedcl.envs.task_spec          import TaskSpec, TransformSpec
@@ -58,6 +59,12 @@ def main():
 
     seed_all(0)
     device = torch.device(args.device)
+    run = wandb.init(                       # REQUIRED
+        project=args.wandb_project,          # your project name
+        name=f"seed{args.seed}",            # an optional run name
+        config=vars(args),                  # saves all CLI flags
+        save_code=True                      # logs the entire script
+    )
 
     # a dummy identity TaskSpec to bootstrap env
     id_spec = TaskSpec("mnist-train", transforms=[])
@@ -118,12 +125,18 @@ def main():
                                         update=True,  is_env=True)
         info_cls = runner.agent_rollout(agent, num_steps=args.k_inner,
                                         update=False, is_env=False)
+        log_dict = {"epoch": epoch}
+        log_dict.update({f"env/{k}": v for k, v in info_env.items()})
+        log_dict.update({f"cls/{k}": v for k, v in info_cls.items()})
+        wandb.log(log_dict, step = epoch)
+        # if epoch % 10 == 0:
+        #     print(f"[{epoch:04d}] "
+        #           f"env_reward={info_env.get('reward_env',0):.3f}  "
+        #           f"cls_acc={info_cls['avg_acc']:.3f}   "
+        #           f"eval_acc={info_cls['eval_acc']:.3f}   "
+        #           f"loss={info_cls['avg_loss']:.4f}")
 
-        if epoch % 10 == 0:
-            print(f"[{epoch:04d}] "
-                  f"env_reward={info_env.get('reward_env',0):.3f}  "
-                  f"cls_acc={info_cls['avg_acc']:.3f}   "
-                  f"loss={info_cls['avg_loss']:.4f}")
+    run.finish()
 
 if __name__ == "__main__":
     main()

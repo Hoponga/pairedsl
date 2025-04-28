@@ -69,17 +69,28 @@ class AdversarialRunner:
             with torch.no_grad():
                 value, action_e, action_log_dist = self.adversary_env.act(self.context_obs.unsqueeze(0))
             task_spec = self.adversary_env.action_to_taskspec(action_e)
+            #print(task_spec)
 
             # 2) Reset the classification env to that task
             obs, _ = self.class_env.reset(task_spec=task_spec)
 
             # 3) Inner‑loop supervised updates of the protagonist
+            prev_obs = obs 
+            total_acc = 0 
             for _ in range(self.k_inner):
-                imgs, labels = next(self.class_env.iterator)
+                imgs = prev_obs 
+                _, action, agent_action_log_dist, _ = self.agent.act(imgs)
+                obs, reward, _, info = self.class_env.step(action)
+                accuracy, labels = info['accuracy'], info['labels']
+                total_acc += accuracy
+
                 self.agent.update(imgs, labels)
+                prev_obs = obs 
 
             # 4) Evaluate protagonist & antagonist accuracies
+            
             acc_pro = self._eval_accuracy(self.agent)
+            #print(acc_pro, total_acc / self.k_inner)
             acc_ant = self._eval_accuracy(self.antagonist)
             # For now, assume the antagonist is always perfect
             reward  = max(1 - acc_pro, 0.0)
@@ -122,6 +133,9 @@ class AdversarialRunner:
             with torch.no_grad():
                 _, pred, _, _ = agent.act(imgs)
                 accs.append((pred.to(labels.device) == labels).float().mean().item())
+        #print("EVALUATION")
+        eval_acc = self._eval_accuracy(agent)
+        stats.update(dict(eval_acc=eval_acc))
 
         stats.update(dict(avg_loss=float(np.mean(losses)),
                           avg_acc=float(np.mean(accs))))
@@ -155,9 +169,45 @@ class AdversarialRunner:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-    def _eval_accuracy(self, agent):
-        """Helper used by *agent_rollout* to quickly evaluate accuracy on the
-        current ClassificationEnv task using the env‑configured DataLoader
-        settings."""
+   
+        # inside AdversarialRunner
+    def _eval_accuracy(self, agent, eval_batches: int = 5):
+        """
+        Evaluate *agent* on a fresh, randomly-permuted task.
 
-        return self.evaluate_accuracy(agent, iter(self.class_env.loader), eval_batches=5)
+        A random action is sampled in tanh space, mapped to a TaskSpec, the
+        ClassificationEnv is reset to that task, and the agent’s accuracy is
+        averaged over *eval_batches* minibatches.
+
+        Returns
+        -------
+        float  ─ mean accuracy in [0, 1].
+        """
+
+        # 1) sample arbitrary permutation via the adversary’s action space
+        rand_action = torch.empty(self.adversary_env.action_dim,
+                                device=self.device).uniform_(-1.0, 1.0)
+        task_spec   = self.adversary_env.action_to_taskspec(rand_action)
+
+        # 2) reset env to the new task (updates its internal DataLoader)
+        _, _ = self.class_env.reset(task_spec=task_spec)
+
+        # 3) iterate over the env’s DataLoader for quick evaluation
+        loader_iter = iter(self.class_env.loader)
+        total, correct = 0, 0
+
+        for _ in range(eval_batches):
+            
+            try:
+                imgs, labels = next(loader_iter)
+            except StopIteration:          # in case the loader is small
+                loader_iter = iter(self.class_env.loader)
+                imgs, labels = next(loader_iter)
+
+            with torch.no_grad():
+                _, preds, _, _ = agent.act(imgs.to(self.device))
+            correct += (preds.cpu() == labels).sum().item()
+            total   += labels.numel()
+            #print(correct, total)
+
+        return correct / total

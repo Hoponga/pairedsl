@@ -33,7 +33,7 @@ class ClassifierAgent:
             logits = self.model(obs)                      # [B, C]
             action = torch.argmax(logits, dim=1)          # [B]
             log_dist = F.log_softmax(logits, dim=1)       # [B, C]
-        return None, action.cpu(), log_dist.cpu(), None
+        return None, action, log_dist, None
 
     def process_action(self, action_cpu):
         # identity mapping: action is already class index
