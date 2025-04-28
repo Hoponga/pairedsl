@@ -6,7 +6,7 @@ import torch
 from torchvision import transforms as T
 from torch.utils.data import Dataset
 
-from pairedcl.data.datasets import get_base_dataset          # you will implement
+from pairedcl.data.datasets import get_base_dataset
 
 # ---------- helper registry ----------
 _transform_registry = {
@@ -18,6 +18,7 @@ _transform_registry = {
 
 
 
+# Transform specification for a particular transformation given by the above transform registry 
 @dataclass(frozen=True)
 class TransformSpec:
     name: str
@@ -29,6 +30,9 @@ class TransformSpec:
 
 
 
+
+# Task specification -- abstraction for a UED parameter selection -- 
+# given a base dataset, sequentially apply a list of transforms o n this dataset by using the TransformedDataset wrapper 
 @dataclass(frozen=True)
 class TaskSpec:
     dataset_id: str                        # e.g. "mnist-train", "core50-s10"
@@ -36,7 +40,6 @@ class TaskSpec:
     class_subset: Optional[Sequence[int]] = None
     seed: int = 0                          # reproducibility
 
-    # --------------------------------------------------------------
     def make_dataset(self, *, train: bool = True) -> Dataset:
         base_ds = get_base_dataset(self.dataset_id, train=train, seed=self.seed)
         if self.class_subset is not None:                       # filter classes
@@ -46,7 +49,9 @@ class TaskSpec:
         transform_pipeline = T.Compose([ts.build() for ts in self.transforms])
         return _TransformedDataset(base_ds, transform_pipeline)
 
-# ---------- thin wrapper ----------
+
+
+# Wrapper on a dataset to apply a transform elementwise to data items 
 class _TransformedDataset(Dataset):
     def __init__(self, root_ds: Dataset, transform):
         self.dataset, self.transform = root_ds, transform

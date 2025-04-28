@@ -2,4 +2,5 @@ agents
 data
 envs
 runners
+scripts
 utils

@@ -18,6 +18,9 @@ pairedcl.egg-info/requires.txt
 pairedcl.egg-info/top_level.txt
 runners/__init__.py
 runners/adversarial_runner.py
+scripts/__init__.py
+scripts/mnist_train.py
+scripts/setup.py
 utils/__init__.py
 utils/arguments.py
 utils/logger.py
