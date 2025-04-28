@@ -11,3 +11,5 @@ cd into pairedcl directory and pip install -e .
 ## Experiments 
 
 scripts/mnist_train.py trains a classifier on a generalization of the permuted MNIST task, where evaluation tests the classifier's performance on batches of MNIST transformed by an arbitrary permutation in the total 784!-sized permutation space. 
+
+
