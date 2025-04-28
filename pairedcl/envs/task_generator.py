@@ -70,23 +70,87 @@ class TaskGenerator(nn.Module):
         return mu, std, value
 
     # -----------------------------------------------------------------
-    @torch.no_grad()
-    def act(self, obs: torch.Tensor, deterministic: bool = False):
-        """Return squashed action in (‑1,1)."""
-        mu, std, _ = self.forward(obs)
-        raw = mu if deterministic else Normal(mu, std).sample()
-        action = torch.tanh(raw)
-        return action.squeeze(0)
 
-    def value_logp(self, obs: torch.Tensor, action: torch.Tensor):
-        """Compute value estimate and log‑prob under current policy for *given*
-        squashed action (tanh‑space)."""
-        mu, std, value = self.forward(obs)
-        # inverse tanh (atanh)
-        atanh = 0.5 * (torch.log1p(action) - torch.log1p(-action))
-        log_det_jacob = torch.log1p(-action.pow(2) + 1e-6).sum(-1, keepdim=True)
-        logp = Normal(mu, std).log_prob(atanh).sum(-1, keepdim=True) - log_det_jacob
-        return value, atanh, logp, None
+
+    # we already do squeeze here 
+    # inside class TaskGenerator
+
+    def act(self, obs: torch.Tensor, deterministic: bool = False):
+        """
+        Parameters
+        ----------
+        obs : Tensor
+            Observation tensor shaped (B, obs_dim) or (obs_dim,) for a single batch.
+        deterministic : bool, default False
+            If True, use the mean (µ) of the Gaussian; else sample.
+
+        Returns
+        -------
+        value : Tensor
+            Critic estimate V(s) with shape (B, 1).
+        action : Tensor
+            Squashed action in (-1, 1) with shape (B, action_dim).
+        action_log_dist : Tensor
+            Log-probability of *action* under the current policy, shape (B, 1).
+        """
+        obs = obs.to(self.device)
+        mu, std, value = self.forward(obs)              # (B, D), (B, D), (B, 1)
+        dist = Normal(mu, std)
+
+        raw = mu if deterministic else dist.rsample()   # rsample() keeps grad flow
+        action = torch.tanh(raw)
+
+        # log-probability in **squashed** (tanh) space
+        log_prob_raw = dist.log_prob(raw).sum(dim=-1, keepdim=True)  # (B, 1)
+        log_det_jac  = torch.log1p(-action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+        action_log_dist = log_prob_raw - log_det_jac
+
+        return value, action, action_log_dist
+
+    
+
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor,
+        rnn_hxs=None,          # kept for API symmetry – ignored
+        masks=None             # kept for API symmetry – ignored
+    ):
+        """
+        Parameters
+        ----------
+        obs : Tensor
+            (B, obs_dim) or (obs_dim,) observation batch.
+        action : Tensor
+            (B, action_dim) tensor of *squashed* (tanh) actions in (-1, 1).
+
+        Returns
+        -------
+        value : Tensor          shape (B, 1)
+        action_log_probs : Tensor  shape (B, 1)
+        dist_entropy : Tensor      scalar mean entropy of the policy
+        rnn_hxs : None            (placeholder for RNN APIs)
+        """
+        obs = obs.to(self.device)
+        action = action.to(self.device)
+
+        mu, std, value = self.forward(obs)          # (B, D), (B, D), (B, 1)
+        dist = Normal(mu, std)
+
+        # -------- log-probability of the *given* squashed action -------------
+        # Inverse tanh
+        atanh_action = 0.5 * (torch.log1p(action) - torch.log1p(-action))
+        # Log-prob under the Gaussian before the squash
+        log_prob_raw = dist.log_prob(atanh_action).sum(dim=-1, keepdim=True)
+        # |det J| of the tanh transformation
+        log_det_jac  = torch.log1p(-action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+        action_log_probs = log_prob_raw - log_det_jac                      # (B,1)
+
+        # -------- entropy ----------------------------------------------------
+        # Entropy of the *unsquashed* Gaussian (common practice for PPO)
+        dist_entropy = dist.entropy().sum(dim=-1).mean()                   # scalar
+
+        return value, action_log_probs, dist_entropy, None 
 
     # -----------------------------------------------------------------
     def action_to_taskspec(self, action: torch.Tensor) -> TaskSpec:

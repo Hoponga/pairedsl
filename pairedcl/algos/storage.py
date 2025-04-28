@@ -5,6 +5,8 @@ from __future__ import annotations  # safe for <3.10 “|” operator
 from typing import Union, Optional
 import torch
 import numpy as np
+from torch.utils.data.sampler import \
+    BatchSampler, SubsetRandomSampler, SequentialSampler
 
 
 
@@ -34,47 +36,134 @@ class RolloutStorage:
         # --- main buffers --------------------------------------------------
         # The obs shape is currently just a single integer, seems sketchy 
 
-        self.obs      = torch.zeros((num_steps, num_envs, *obs_shape),
+        self.obs      = torch.zeros((num_steps + 1, num_envs, *obs_shape),
                                     device=self.device)
         self.actions  = torch.zeros((num_steps, num_envs, *action_space.shape),device=self.device)
         self.logprobs = torch.zeros((num_steps, num_envs, 1), device=self.device)
-        self.values   = torch.zeros((num_steps, num_envs, 1), device=self.device)
+        self.values   = torch.zeros((num_steps + 1, num_envs, 1), device=self.device)
         self.rewards  = torch.zeros((num_steps, num_envs, 1), device=self.device)
-        self.masks    = torch.ones( (num_steps, num_envs, 1), device=self.device)
+        self.masks    = torch.ones( (num_steps + 1, num_envs, 1), device=self.device)
+
+        if action_space.__class__.__name__ == 'Discrete':
+            action_shape = 1
+            self.action_log_dist = torch.zeros(num_steps, num_envs, *action_space.shape)
+            self.action_log_probs = torch.zeros(num_steps, num_envs, 1)
+        elif action_space.__class__.__name__ == 'MultiDiscrete':
+            action_shape = len(list(action_space.nvec))
+            self.action_log_dist = torch.zeros(num_steps, num_envs, np.sum(list(action_space.nvec)))
+            self.action_log_probs = torch.zeros(num_steps, num_envs, len(list(action_space.nvec)))
+        else: # Hack it to just store action prob for sampled action if continuous
+            action_shape = action_space.shape[0]
+            self.action_log_probs = torch.zeros(num_steps, num_envs, 1)
+            self.action_log_dist = torch.zeros_like(self.action_log_probs)
+
+
+        if action_space.__class__.__name__ in ['Discrete', 'MultiDiscrete']:
+            self.actions = self.actions.long()
+
+
+        self.is_dict_obs = False 
 
         # computed later
         self.returns     = torch.zeros_like(self.values)
         self.advantages  = torch.zeros_like(self.values)
-
+        self.use_popart = False 
         self.step = 0  # write-pointer
 
-    def insert(
-        self,
-        obs:     torch.Tensor,
-        action:  torch.Tensor,
-        logp:    torch.Tensor,
-        value:   torch.Tensor,
-        reward:  torch.Tensor,
-        mask:    torch.Tensor,
-    ) -> None:
-        """Store a single transition at the current write pointer."""
-        if self.step >= self.num_steps:
-            raise RuntimeError("RolloutCLStorage is full — call after_update() first.")
+    def insert(self, obs, actions, action_log_probs, action_log_dist,
+               value_preds, rewards, mask):
+        if len(rewards.shape) == 3: rewards = rewards.squeeze(2)
 
-        self.obs[self.step].copy_(obs)
-        self.actions[self.step].copy_(action)
-        self.logprobs[self.step].copy_(logp)
-        self.values[self.step].copy_(value)
-        self.rewards[self.step].copy_(reward)
-        self.masks[self.step].copy_(mask)
+        if self.is_dict_obs:
+            [self.obs[k][self.step + 1].copy_(obs[k]) for k in self.obs.keys()]
+        else:
+            self.obs[self.step + 1].copy_(obs)
 
-        self.step += 1
+
+        self.actions[self.step].copy_(actions) 
+        self.action_log_probs[self.step].copy_(action_log_probs)
+        self.action_log_dist[self.step].copy_(action_log_dist)
+        self.values[self.step].copy_(value_preds)
+        self.rewards[self.step].copy_(rewards)
+        self.masks[self.step + 1].copy_(mask)
+
+        self.step = (self.step + 1) % self.num_steps
 
     # --------------------------------------------------------------------- #
     # Book-keeping
     # --------------------------------------------------------------------- #
     def size(self) -> int:
+        
         return self.step
+
+    def feed_forward_generator(self,
+                               advantages,
+                               num_mini_batch=None,
+                               mini_batch_size=None):
+        num_steps, num_processes = self.rewards.size()[0:2]
+        batch_size = num_processes * num_steps
+
+        if mini_batch_size is None:
+            assert batch_size >= num_mini_batch, (
+                "PPO requires the number of processes ({}) "
+                "* number of steps ({}) = {} "
+                "to be greater than or equal to the number of PPO mini batches ({})."
+                "".format(num_processes, num_steps, num_processes * num_steps,
+                          num_mini_batch))
+            mini_batch_size = batch_size // num_mini_batch
+
+
+        #print(batch_size, mini_batch_size, self.obs.shape, self.actions.shape)
+
+        sampler = BatchSampler(
+            SubsetRandomSampler(range(batch_size)),
+            mini_batch_size,
+            drop_last=False)
+     
+        for indices in sampler:
+            if self.is_dict_obs:
+                obs_batch = {k: self.obs[k][:-1].view(-1, *self.obs[k].size()[2:])[indices] for k in self.obs.keys()}
+            else:
+                obs_batch = self.obs[:-1].view(-1, *self.obs.size()[2:])[indices]
+
+
+
+            actions_batch = self.actions.view(-1,
+                                            self.actions.size(-1))[indices]
+
+            value_preds_batch = self.values[:-1].view(-1, 1)[indices]
+            return_batch = self.returns[:-1].view(-1, 1)[indices]
+
+            masks_batch = self.masks[:-1].view(-1, 1)[indices]
+            old_action_log_probs_batch = self.action_log_probs.view(-1,
+                                                                    1)[indices]
+            if advantages is None:
+                adv_targ = None
+            else:
+                adv_targ = advantages.view(-1, 1)[indices]
+
+          
+
+            yield obs_batch, actions_batch, \
+                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ
+
+
+    def to(self, device): 
+        self.device = device
+        if self.is_dict_obs:
+            for k in self.obs.keys():
+                self.obs[k] = self.obs[k].to(device)
+        else:
+            self.obs = self.obs.to(device)
+        self.actions = self.actions.to(device)
+        self.values = self.values.to(device)
+        self.returns = self.returns.to(device)
+        self.advantages = self.advantages.to(device)
+        self.rewards = self.rewards.to(device)
+        self.masks = self.masks.to(device)
+        self.action_log_probs = self.action_log_probs.to(device)
+        self.action_log_dist = self.action_log_dist.to(device)
+
 
     def after_update(self) -> None:
         """Clear the buffer (cheaply) by resetting the write pointer."""

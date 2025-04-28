@@ -9,8 +9,7 @@ Puts the pieces together to train PAIRED‐CL on Permuted MNIST.
 """
 
 import sys, pprint
-pprint.pprint(sys.executable)
-pprint.pprint(sys.path)
+
 
 import argparse, time, math, random
 from pathlib import Path
@@ -43,40 +42,19 @@ def seed_all(seed=0):
     random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
 
 # -----------------------------------------------------------------------------
-def make_task_generator(device):
-    # 1-D action → permutation seed in [0, 2^20)
-    param_defs = [
-        dict(tname="permute", pkey="seed", low=0.0, high=2**20 - 1)
-    ]
-    tg = TaskGenerator(param_defs,
-                       base_dataset="mnist-train",
-                       obs_dim=1,
-                       hidden_dim=64,
-                       device=device)
-    # Monkey-patch: interpret 'seed' into permutation tensor
-    def _permute_spec(pd_seed):
-        g = torch.Generator().manual_seed(int(pd_seed))
-        return torch.randperm(28*28, generator=g)
-    tg._permute_spec = _permute_spec
-    # Override action_to_taskspec for permuted MNIST
-    def _a2spec(self, action):
-        seed_val = ((action[0].item() + 1)/2) * (2**20 -1)
-        perm = self._permute_spec(seed_val)
-        ts = TaskSpec("mnist-train", [TransformSpec("permute", {"p": perm})])
-        return ts
-    tg.action_to_taskspec = _a2spec.__get__(tg, TaskGenerator)
-    return tg
 
 # -----------------------------------------------------------------------------
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--epochs", type=int, default=100)
-    p.add_argument("--k_inner", type=int, default=3,
-                   help="batches to train classifier per task")
-    p.add_argument("--rollout", type=int, default=16,
-                   help="tasks per PPO update")
-    p.add_argument("--device", default="cpu")
-    args = p.parse_args()
+    from pairedcl.utils.arguments import get_args 
+    # p = argparse.ArgumentParser()
+    # p.add_argument("--epochs", type=int, default=100)
+    # p.add_argument("--k_inner", type=int, default=3,
+    #                help="batches to train classifier per task")
+    # p.add_argument("--rollout", type=int, default=16,
+    #                help="tasks per PPO update")
+    # p.add_argument("--device", default="cpu")
+    # args = p.parse_args()
+    args = get_args()
 
     seed_all(0)
     device = torch.device(args.device)
@@ -97,7 +75,6 @@ def main():
                                  num_envs=1)  # keep frozen / update occasionally
 
     # --- environment adversary ----------------------------------------------
-    tg = make_task_generator(device)
 
     # # RL storage + PPO for π_E
     # storage = RolloutStorage(
@@ -119,7 +96,7 @@ def main():
 
     # --- runner --------------------------------------------------------------
     # replace the “RL storage + PPO” block
-    from pairedcl.algos.make_agent import make_agent
+    from pairedcl.utils.make_agent import make_agent
 
     adversary_model, ppo, storage = make_agent(args, device)
 
@@ -137,7 +114,7 @@ def main():
 
     # --- training loop -------------------------------------------------------
     for epoch in range(args.epochs):
-        info_env = runner.agent_rollout(tg,   num_steps=1,
+        info_env = runner.agent_rollout(adversary_model,   num_steps=1,
                                         update=True,  is_env=True)
         info_cls = runner.agent_rollout(agent, num_steps=args.k_inner,
                                         update=False, is_env=False)

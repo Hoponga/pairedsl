@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import random 
+import pdb
 
 class PPO():
     """
@@ -50,7 +51,7 @@ class PPO():
         if rollouts.use_popart:
             value_preds = rollouts.denorm_value_preds
         else:
-            value_preds = rollouts.value_preds
+            value_preds = rollouts.values
 
         advantages = rollouts.returns[:-1] - value_preds[:-1]
         advantages = (advantages - advantages.mean()) / (
@@ -66,21 +67,17 @@ class PPO():
             grad_norms = []
 
         for e in range(self.ppo_epoch):
-            if self.actor_critic.is_recurrent:
-                data_generator = rollouts.recurrent_generator(
-                    advantages, self.num_mini_batch)
-            else:
-                data_generator = rollouts.feed_forward_generator(
+            #print(advantages.shape, self.num_mini_batch)
+            data_generator = rollouts.feed_forward_generator(
                     advantages, self.num_mini_batch)
 
             for sample in data_generator:
-                obs_batch, recurrent_hidden_states_batch, actions_batch, \
+                obs_batch, actions_batch, \
                 value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, \
                         adv_targ = sample
                 
                 values, action_log_probs, dist_entropy, _ = self.actor_critic.evaluate_actions(
-                    obs_batch, recurrent_hidden_states_batch, masks_batch,
-                    actions_batch)
+                    obs_batch, actions_batch)
                     
                 ratio = torch.exp(action_log_probs -
                                   old_action_log_probs_batch)

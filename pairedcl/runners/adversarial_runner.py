@@ -26,6 +26,8 @@ class AdversarialRunner:
         # a trivial “context” for π_E; could be richer later
         self.context_obs   = torch.zeros(1, device=self.device)
 
+        self.is_discrete_actions = self.adversary_env.action_space.__class__.__name__ == 'Discrete'
+
     # ------------------------------------------------------------------
     # Utility functions
     # ------------------------------------------------------------------
@@ -65,7 +67,7 @@ class AdversarialRunner:
         if is_env:
             # 1) π_E proposes a TaskSpec
             with torch.no_grad():
-                action_e = self.adversary_env.act(self.context_obs.unsqueeze(0)).squeeze(0)
+                value, action_e, action_log_dist = self.adversary_env.act(self.context_obs.unsqueeze(0))
             task_spec = self.adversary_env.action_to_taskspec(action_e)
 
             # 2) Reset the classification env to that task
@@ -79,27 +81,31 @@ class AdversarialRunner:
             # 4) Evaluate protagonist & antagonist accuracies
             acc_pro = self._eval_accuracy(self.agent)
             acc_ant = self._eval_accuracy(self.antagonist)
-            reward  = max(acc_ant - acc_pro, 0.0)
+            # For now, assume the antagonist is always perfect
+            reward  = max(1 - acc_pro, 0.0)
 
             # 5) Store transition for PPO
             mask = torch.ones(1, 1, device=self.device)  # never "done" in this setting
-            value, _, logp, _ = self.adversary_env.value_logp(
-                self.context_obs.unsqueeze(0), action_e.unsqueeze(0)
-            )
-            self.storage.insert(self.context_obs, action_e, logp, value, torch.tensor([[reward]]), mask)
+            if self.is_discrete_actions:
+                action_log_prob = action_log_dist.gather(-1, action)
+            else:
+                action_log_prob = action_log_dist
+
+            
+            self.storage.insert(self.context_obs, action_e, action_log_prob, action_log_dist, value, torch.tensor([[reward]]), mask)
 
             stats.update(dict(acc_pro=acc_pro, acc_ant=acc_ant, reward_env=reward))
 
             # 6) Optional PPO update
             if update and self.storage.size() >= self.rollout_len:
                 with torch.no_grad():
-                    last_val, _, _, _ = self.adversary_env.value_logp(
+                    last_val, _, _, _ = self.adversary_env.evaluate_actions(
                         self.context_obs.unsqueeze(0), action_e.unsqueeze(0)
                     )
                 self.storage.compute_returns_and_advantages(last_val, use_gae=True)
-                v_loss, p_loss, entropy = self.ppo.update(self.storage)
+                v_loss, p_loss, entropy, info = self.ppo.update(self.storage)
                 self.storage.after_update()
-                stats.update(dict(policy_loss=p_loss, value_loss=v_loss, entropy=entropy))
+                stats.update(dict(policy_loss=p_loss, value_loss=v_loss, entropy=entropy, info=info))
 
             return stats
 
@@ -153,10 +159,5 @@ class AdversarialRunner:
         """Helper used by *agent_rollout* to quickly evaluate accuracy on the
         current ClassificationEnv task using the env‑configured DataLoader
         settings."""
-        loader = DataLoader(
-            self.class_env.env.dataset,
-            batch_size=self.class_env.batch_size,
-            shuffle=False,
-            drop_last=False,
-        )
-        return self.evaluate_accuracy(agent, loader, eval_batches=5)
+
+        return self.evaluate_accuracy(agent, iter(self.class_env.loader), eval_batches=5)

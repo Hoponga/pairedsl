@@ -19,7 +19,15 @@ from __future__ import annotations
 import argparse
 import pathlib
 import typing as _t
-
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 try:
     import torch  # optional ‑ only used for automatic CUDA detection
 except ImportError:  # pragma: no cover – torch not installed in docs
@@ -67,6 +75,18 @@ def get_parser() -> argparse.ArgumentParser:
                    help="# batches (gradient steps) per task episode")
     g.add_argument("--lr", type=float, default=3e-4,
                    help="learning‑rate for protagonist / antagonist models")
+    g.add_argument('--adv_num_mini_batch',type=int,default=1,help='number of batches for PPO used by adversary')
+    g.add_argument('--adv_ppo_epoch',type=int,default=5,help='Number of PPO epochs used by adversary')
+    g.add_argument(
+    '--num_processes',
+    type=int,
+    default=1,
+    help='How many training CPU processes to use for rollouts')
+    g.add_argument(
+    '--num_steps',
+    type=int,
+    default=256,
+    help='Number of rollout steps for PPO')
 
     # -------- PPO / RL hyper‑params ----------------------------------------
     g = parser.add_argument_group("PPO / advantage settings")
@@ -77,12 +97,59 @@ def get_parser() -> argparse.ArgumentParser:
     g.add_argument("--value-loss-coef", type=float, default=0.5)
     g.add_argument("--max-grad-norm", type=float, default=0.5)
 
+
+    g.add_argument(
+    '--clip_param',
+    type=float,
+    default=0.2,
+    help='PPO clip parameter')
+    g.add_argument(
+    '--clip_value_loss',
+    type=str2bool,
+    default=True,
+    help='PPO clip value loss')
+    g.add_argument(
+    '--adv_clip_reward',
+    type=float,
+    default=None,
+    help='Clip adversary rewards')
+    g.add_argument(
+    '--eps',
+    type=float,
+    default=1e-5,
+    help='RMSprop optimizer epsilon')
+    g.add_argument(
+    '--alpha',
+    type=float,
+    default=0.99,
+    help='RMSprop optimizer apha')
+
     # -------- training loop -------------------------------------------------
     g = parser.add_argument_group("Outer loop")
     g.add_argument("--num-updates", type=int, default=20_000,
                    help="total generator/protagonist updates")
     g.add_argument("--num-envs", type=int, default=8,
                    help="# parallel environments / tasks")
+
+    g.add_argument(
+    '--log_grad_norm',
+    type=str2bool, nargs='?', const=True, default=False,
+    help="Log gradient norms")
+    g.add_argument(
+    '--log_action_complexity',
+    type=str2bool, nargs='?', const=True, default=False,
+    help="Log action trajectory complexity metric")
+    g.add_argument(
+    '--test_interval',
+    type=int,
+    default=250,
+    help='Evaluate on test envs every n updates.')
+
+    g.add_argument("--k_inner", type=int, default=3,
+                   help="batches to train classifier per task")
+    g.add_argument("--rollout", type=int, default=16,
+                   help="tasks per PPO update")
+    g.add_argument("--epochs", type=int, default=100)
 
     # -------- logging / I/O -------------------------------------------------
     g = parser.add_argument_group("Logging & checkpoints")
