@@ -31,8 +31,8 @@ class Evaluator:
         # ---- create and store T TaskSpecs ----------------------------------
         self.task_specs: List[TaskSpec] = []
         for _ in range(T):
-            rand_action = torch.empty(task_gen.action_dim,
-                                      device=self.device).uniform_(-1, 1)
+            rand_action = torch.empty(task_gen.single_task_action_dim -1 , # ignore the gate 
+                                      device=self.device).uniform_(0, 1)
             self.task_specs.append(task_gen.action_to_taskspec(rand_action))
 
     # -----------------------------------------------------------------------

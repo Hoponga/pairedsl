@@ -5,44 +5,44 @@ from pairedcl.algos.ppo     import PPO
 import torch 
 from pairedcl.envs.task_generator import TaskGenerator 
 from pairedcl.envs.task_spec import TaskSpec, TransformSpec
+from pairedcl.utils.permute import noise_sorted_perm
+import numpy as np 
 
 
-def make_task_generator(device):
-    # 1-D action → permutation seed in [0, 2^20)
+def make_task_generator(device, args, seed = 0):
+    # our action is the noise factor for our noise_sorted_perm 
     param_defs = [
-        dict(tname="permute", pkey="seed", low=0.0, high=2**20 - 1)
+        dict(tname="permute", pkey="sigma", low=0.0, high=1.0)
     ]
     tg = TaskGenerator(param_defs,
                        base_dataset="mnist-train",
-                       obs_dim=1,
+                       obs_dim=args.context_obs_shape,
                        hidden_dim=64,
                        device=device)
-    # Monkey-patch: interpret 'seed' into permutation tensor
-    def _permute_spec(pd_seed):
-        g = torch.Generator().manual_seed(int(pd_seed))
-        return torch.randperm(28*28, generator=g)
-    tg._permute_spec = _permute_spec
+
+
+    tg._permute_spec = lambda p : noise_sorted_perm(28*28, p, np.random.RandomState(seed))
     # Override action_to_taskspec for permuted MNIST
-    def _a2spec(self, action):
-        seed_val = ((action[0].item() + 1)/2) * (2**20 -1)
-        perm = self._permute_spec(seed_val)
-        ts = TaskSpec("mnist-train", [TransformSpec("permute", {"p": perm})])
-        return ts
-    tg.action_to_taskspec = _a2spec.__get__(tg, TaskGenerator)
+    # def _a2spec(self, action):
+    #     seed_val = ((action[0].item() + 1)/2) * (2**20 -1)
+    #     perm = self._permute_spec(seed_val)
+    #     ts = TaskSpec("mnist-train", [TransformSpec("permute", {"p": perm})])
+    #     return ts
+    # tg.action_to_taskspec = _a2spec.__get__(tg, TaskGenerator)
     return tg
 
 def make_agent(args, device="cpu"):
-    actor_critic = make_task_generator(device)
+    actor_critic = make_task_generator(device, args)
     
 
 
     
-
+    #print(actor_critic.mu_head)
     storage = RolloutStorage(
         num_steps=args.num_steps,
         num_envs=1,
-        obs_shape=(1,),
-        action_space=actor_critic.mu_head.weight.new_zeros(1),  # (1,)
+        obs_shape=(args.context_obs_shape,), # what info does the adversary environment take in? 
+        action_space=actor_critic.mu_head.weight.new_zeros(actor_critic.mu_head.out_features ),  # (1,)
         gamma=0.99,
         gae_lambda=0.95,
         device=device,

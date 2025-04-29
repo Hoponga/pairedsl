@@ -88,6 +88,7 @@ def get_parser() -> argparse.ArgumentParser:
     default=256,
     help='Number of rollout steps for PPO')
 
+    g.add_argument('--context_obs_shape', type = int, default = 3, help = 'Number of scalar features that the adversary environment takes in as context to making a new task')
     # -------- PPO / RL hyper‑params ----------------------------------------
     g = parser.add_argument_group("PPO / advantage settings")
     g.add_argument("--gamma", type=float, default=0.99)
@@ -145,8 +146,10 @@ def get_parser() -> argparse.ArgumentParser:
     default=250,
     help='Evaluate on test envs every n updates.')
 
-    g.add_argument("--k_inner", type=int, default=3,
+    g.add_argument("--k_inner", type=int, default=4,
                    help="batches to train classifier per task")
+    g.add_argument("--antagonist_delta", type = int, default = 4, 
+                   help="Extra number of batches to train antagonist per task")
     g.add_argument("--rollout", type=int, default=16,
                    help="tasks per PPO update")
     g.add_argument("--epochs", type=int, default=10000)

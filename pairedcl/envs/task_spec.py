@@ -8,6 +8,8 @@ from torch.utils.data import Dataset
 
 from pairedcl.data.datasets import get_base_dataset
 
+
+
 # ---------- helper registry ----------
 _transform_registry = {
     "permute": lambda p: lambda x: x.view(-1)[p].view_as(x),
@@ -15,6 +17,8 @@ _transform_registry = {
     "gauss_noise": lambda sigma: lambda x: x + torch.randn_like(x) * sigma,
     # register more here …
 }
+
+
 
 
 
@@ -27,7 +31,6 @@ class TransformSpec:
     def build(self):
         fn = _transform_registry[self.name]
         return fn(**self.params) if callable(fn) else fn
-
 
 
 

@@ -35,7 +35,7 @@ class RolloutStorage:
 
         # --- main buffers --------------------------------------------------
         # The obs shape is currently just a single integer, seems sketchy 
-
+        self.obs_shape = obs_shape
         self.obs      = torch.zeros((num_steps + 1, num_envs, *obs_shape),
                                     device=self.device)
         self.actions  = torch.zeros((num_steps, num_envs, *action_space.shape),device=self.device)

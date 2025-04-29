@@ -8,6 +8,7 @@ from pairedcl.envs.task_spec          import TaskSpec
 from pairedcl.envs.task_generator     import TaskGenerator
 from pairedcl.envs.classification_env import ClassificationEnv
 from pairedcl.utils.evaluator                         import Evaluator          # class from earlier
+from pairedcl.utils.make_agent                        import make_task_generator
 
 # We use the exact same MLP as in PAIRED-CL
 class MLP(nn.Module):
@@ -40,7 +41,7 @@ class ReplayBuffer:
 # -------------------------------------------------------------------
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--T",              type=int,   default=20, help="# tasks")
+    p.add_argument("--T",              type=int,   default=2, help="# tasks")
     p.add_argument("--batch",          type=int,   default=64)
     p.add_argument("--epochs",         type=int,   default=50)
     p.add_argument("--replay_ratio",   type=float, default=0.5,
@@ -51,27 +52,22 @@ def main():
     device = torch.device(args.device)
 
     # Define the env policy (that will never be trained, just as the wrapper for dataset transformations) 
-    param_defs = [dict(tname="permute_pixels", pkey="seed", low=0.0, high=1.0)]
-    tg = TaskGenerator(param_defs, device=device)
+    tg = make_task_generator(device) 
+
 
     
-
-    print(torch.rand(tg.action_dim)*2 - 1)
-    train_specs = [tg.action_to_taskspec((torch.rand(tg.action_dim)*2 - 1).unsqueeze(0))
+    train_specs = [tg.action_to_taskspec(torch.rand(tg.action_dim)*2 - 1)
                    for _ in range(args.T)]
     dummy_spec  = TaskSpec("mnist-train", transforms=[])        # bootstrap
 
     class_env = ClassificationEnv(dummy_spec, batch_size=args.batch, device=device)
-    evaluator = Evaluator(tg, class_env, T=30, batches_per_task=8, device=device)
+    evaluator = Evaluator(tg, class_env, T=args.T, batches_per_task=8, device=device)
 
     # 3) model, optim ---------------------------------------------------------
     model = MLP().to(device)
     opt   = optim.Adam(model.parameters(), lr=1e-3)
     ce    = nn.CrossEntropyLoss()
 
-    agent = ClassifierAgent(model, opt,
-                            argparse.Namespace(device=device),
-                            num_envs=1)
 
     # 4) replay buffer --------------------------------------------------------
     buffer = ReplayBuffer(capacity=20_000)

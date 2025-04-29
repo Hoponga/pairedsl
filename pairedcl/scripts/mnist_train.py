@@ -122,6 +122,7 @@ def main():
         k_inner_updates=args.k_inner,
         rollout_length=args.rollout,
         device=device,
+        antagonist_delta = args.antagonist_delta
     )
 
     evaluator = Evaluator(adversary_model, class_env, T=30, batches_per_task=8, device=args.device)
@@ -139,15 +140,17 @@ def main():
         log_dict = {"epoch": epoch}
         log_dict.update({f"env/{k}": v for k, v in info_env.items()})
         log_dict.update({f"cls/{k}": v for k, v in info_cls.items()})
-        eval_acc = evaluator.evaluate(agent)
+        
         wandb.log(log_dict, step = epoch)
-        wandb.log({"eval/accuracy": eval_acc}, step=epoch)
-        # if epoch % 10 == 0:
-        #     print(f"[{epoch:04d}] "
-        #           f"env_reward={info_env.get('reward_env',0):.3f}  "
-        #           f"cls_acc={info_cls['avg_acc']:.3f}   "
-        #           f"eval_acc={info_cls['eval_acc']:.3f}   "
-        #           f"loss={info_cls['avg_loss']:.4f}")
+        
+        if epoch % 10 == 0:
+            eval_acc = evaluator.evaluate(agent)
+            wandb.log({"eval/accuracy": eval_acc}, step=epoch)
+            print(f"[{epoch:04d}] "
+                  f"env_reward={info_env.get('reward_env',0):.3f}  "
+                  f"cls_acc={info_cls['avg_acc']:.3f}   "
+                  f"eval_acc={eval_acc:.3f}   "
+                  f"loss={info_cls['avg_loss']:.4f}")
 
     run.finish()
 

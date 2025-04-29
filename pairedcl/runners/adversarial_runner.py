@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
-
+import pdb 
 
 class AdversarialRunner:
     def __init__(self, *,
@@ -13,7 +13,8 @@ class AdversarialRunner:
                  storage,            # RolloutStorageCL for π_E
                  k_inner_updates: int,
                  rollout_length: int,
-                 device: str = "cpu"):
+                 device: str = "cpu", 
+                 antagonist_delta : int = 0):
         self.agent         = agent
         self.antagonist    = antagonist
         self.adversary_env = adversary_env
@@ -24,7 +25,8 @@ class AdversarialRunner:
         self.rollout_len   = rollout_length
         self.device        = torch.device(device)
         # a trivial “context” for π_E; could be richer later
-        self.context_obs   = torch.zeros(1, device=self.device)
+        self.context_obs   = torch.zeros(self.storage.obs_shape, device=self.device)
+        self.antagonist_delta = antagonist_delta
 
         self.is_discrete_actions = self.adversary_env.action_space.__class__.__name__ == 'Discrete'
 
@@ -67,18 +69,28 @@ class AdversarialRunner:
         if is_env:
             # 1) π_E proposes a TaskSpec
             with torch.no_grad():
+
                 value, action_e, action_log_dist = self.adversary_env.act(self.context_obs.unsqueeze(0))
-            task_spec = self.adversary_env.action_to_taskspec(action_e)
+
+            # now, our action_e is of shape (M*D)
+
+            task_specs = self.adversary_env.actions_to_taskspecs(action_e)
+            print(self.context_obs)
+            print(action_e)
+            print(f"{len(task_specs)} tasks proposed")
             #print(task_spec)
-            env_task_complexity = self._task_complexity(task_spec)
+
+            # our task spec should now be a vector over task specs 
+            env_task_complexity = self._task_complexity(task_specs)
 
             # 2) Reset the classification env to that task
-            obs, _ = self.class_env.reset(task_spec=task_spec)
+            obs, _ = self.class_env.reset(task_spec=task_specs)
 
             # 3) Inner‑loop supervised updates of the protagonist
             prev_obs = obs 
             total_acc = 0 
-            
+            #print("here1")
+
             for _ in range(self.k_inner):
                 imgs = prev_obs 
                 _, action, agent_action_log_dist, _ = self.agent.act(imgs)
@@ -90,6 +102,7 @@ class AdversarialRunner:
                 prev_obs = obs 
 
             
+            #print("here2")
             for _ in range(self.k_inner + self.antagonist_delta): 
                 imgs = prev_obs 
                 _, action, agent_action_log_dist, _ = self.antagonist.act(imgs)
@@ -100,23 +113,33 @@ class AdversarialRunner:
                 self.antagonist.update(imgs, labels)
                 prev_obs = obs
 
+            #print("here3")
             # 4) Evaluate protagonist & antagonist accuracies
             
             acc_pro, eval_complexity = self._eval_accuracy(self.agent)
             #print(acc_pro, total_acc / self.k_inner)
             acc_ant, eval_complexity = self._eval_accuracy(self.antagonist)
             # For now, assume the antagonist is always perfect
-            reward  = max(1 - acc_pro, 0.0)
+            reward  = max(acc_ant - acc_pro, 0.0)
 
             # 5) Store transition for PPO
             mask = torch.ones(1, 1, device=self.device)  # never "done" in this setting
+            err = 1.0 - acc_pro
+            gap = acc_ant - acc_pro
+            comp = env_task_complexity
             if self.is_discrete_actions:
                 action_log_prob = action_log_dist.gather(-1, action)
             else:
                 action_log_prob = action_log_dist
 
-            
+
             self.storage.insert(self.context_obs, action_e, action_log_prob, action_log_dist, value, torch.tensor([[reward]]), mask)
+            with torch.no_grad(): 
+                self.context_obs[0] = 0.9*self.context_obs[0] + 0.1*err
+                self.context_obs[1] = 0.9*self.context_obs[1] + 0.1*env_task_complexity/1e6
+                self.context_obs[2] = 0.9*self.context_obs[2] + 0.1*gap
+
+
 
             stats.update(dict(acc_pro=acc_pro, acc_ant=acc_ant, reward_env=reward, env_task_complexity=env_task_complexity))
 
@@ -184,7 +207,13 @@ class AdversarialRunner:
     # ------------------------------------------------------------------
    
     def _task_complexity(self, task_spec, task_type = 'permutation'): 
+        if not task_spec: 
+            return -1 
         if task_type == 'permutation':
+            if isinstance(task_spec, list):
+                return sum([self._task_complexity(task, task_type = task_type) for task in task_spec])/len(task_spec)
+            
+            #print(task_spec.transforms[0].params)
             perm = task_spec.transforms[0].params['p']
             perm = np.asarray(perm, dtype=int)
             n    = perm.size
@@ -208,8 +237,8 @@ class AdversarialRunner:
         """
 
         # 1) sample arbitrary permutation via the adversary’s action space
-        rand_action = torch.empty(self.adversary_env.action_dim,
-                                device=self.device).uniform_(-1.0, 1.0)
+        rand_action = torch.empty(self.adversary_env.single_task_action_dim -1 , # ignore the gate 
+                                device=self.device).uniform_(0, 1.0)
         task_spec   = self.adversary_env.action_to_taskspec(rand_action)
 
         # 2) reset env to the new task (updates its internal DataLoader)
