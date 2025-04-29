@@ -163,6 +163,7 @@ class TaskGenerator(nn.Module):
           • high  : float ─ Maximum value in real range
         """
         action = torch.as_tensor(action, device=self.device).squeeze()
+        print(action)
         assert action.numel() == self.action_dim, "Action dimension mismatch"
 
         transforms = []

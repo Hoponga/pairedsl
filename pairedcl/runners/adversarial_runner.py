@@ -70,6 +70,7 @@ class AdversarialRunner:
                 value, action_e, action_log_dist = self.adversary_env.act(self.context_obs.unsqueeze(0))
             task_spec = self.adversary_env.action_to_taskspec(action_e)
             #print(task_spec)
+            env_task_complexity = self._task_complexity(task_spec)
 
             # 2) Reset the classification env to that task
             obs, _ = self.class_env.reset(task_spec=task_spec)
@@ -77,6 +78,7 @@ class AdversarialRunner:
             # 3) Inner‑loop supervised updates of the protagonist
             prev_obs = obs 
             total_acc = 0 
+            
             for _ in range(self.k_inner):
                 imgs = prev_obs 
                 _, action, agent_action_log_dist, _ = self.agent.act(imgs)
@@ -87,11 +89,22 @@ class AdversarialRunner:
                 self.agent.update(imgs, labels)
                 prev_obs = obs 
 
+            
+            for _ in range(self.k_inner + self.antagonist_delta): 
+                imgs = prev_obs 
+                _, action, agent_action_log_dist, _ = self.antagonist.act(imgs)
+                obs, reward, _, info = self.class_env.step(action)
+                accuracy, labels = info['accuracy'], info['labels']
+                total_acc += accuracy
+
+                self.antagonist.update(imgs, labels)
+                prev_obs = obs
+
             # 4) Evaluate protagonist & antagonist accuracies
             
-            acc_pro = self._eval_accuracy(self.agent)
+            acc_pro, eval_complexity = self._eval_accuracy(self.agent)
             #print(acc_pro, total_acc / self.k_inner)
-            acc_ant = self._eval_accuracy(self.antagonist)
+            acc_ant, eval_complexity = self._eval_accuracy(self.antagonist)
             # For now, assume the antagonist is always perfect
             reward  = max(1 - acc_pro, 0.0)
 
@@ -105,7 +118,7 @@ class AdversarialRunner:
             
             self.storage.insert(self.context_obs, action_e, action_log_prob, action_log_dist, value, torch.tensor([[reward]]), mask)
 
-            stats.update(dict(acc_pro=acc_pro, acc_ant=acc_ant, reward_env=reward))
+            stats.update(dict(acc_pro=acc_pro, acc_ant=acc_ant, reward_env=reward, env_task_complexity=env_task_complexity))
 
             # 6) Optional PPO update
             if update and self.storage.size() >= self.rollout_len:
@@ -134,8 +147,8 @@ class AdversarialRunner:
                 _, pred, _, _ = agent.act(imgs)
                 accs.append((pred.to(labels.device) == labels).float().mean().item())
         #print("EVALUATION")
-        eval_acc = self._eval_accuracy(agent)
-        stats.update(dict(eval_acc=eval_acc))
+        #eval_acc, eval_complexity = self._eval_accuracy(agent)
+        #stats.update(dict(eval_acc=eval_acc, eval_complexity=eval_complexity))
 
         stats.update(dict(avg_loss=float(np.mean(losses)),
                           avg_acc=float(np.mean(accs))))
@@ -170,6 +183,16 @@ class AdversarialRunner:
     # Internal helpers
     # ------------------------------------------------------------------
    
+    def _task_complexity(self, task_spec, task_type = 'permutation'): 
+        if task_type == 'permutation':
+            perm = task_spec.transforms[0].params['p']
+            perm = np.asarray(perm, dtype=int)
+            n    = perm.size
+            if sorted(perm) != list(range(n)):
+                raise ValueError("Input must be a permutation of 0 … n-1")
+
+            return int(np.abs(perm - np.arange(n)).sum())
+        return -1 
         # inside AdversarialRunner
     def _eval_accuracy(self, agent, eval_batches: int = 5):
         """
@@ -210,4 +233,4 @@ class AdversarialRunner:
             total   += labels.numel()
             #print(correct, total)
 
-        return correct / total
+        return correct / total, self._task_complexity(task_spec)

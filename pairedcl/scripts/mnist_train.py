@@ -25,6 +25,7 @@ from pairedcl.algos.storage      import RolloutStorage
 from pairedcl.algos.ppo          import PPO       
 from pairedcl.runners.adversarial_runner import AdversarialRunner    # with agent_rollout
 
+
 # -----------------------------------------------------------------------------
 # simple MLP for MNIST
 class MLP(nn.Module):
@@ -32,6 +33,7 @@ class MLP(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Flatten(),
+            nn.Linear(in_dim, in_dim), # anti permutation layer??!?!!?!?!?
             nn.Linear(in_dim, 256), nn.ReLU(),
             nn.Linear(256, 256), nn.ReLU(),
             nn.Linear(256, num_classes)
@@ -76,6 +78,8 @@ def main():
     agent = ClassifierAgent(model, opt,
                             argparse.Namespace(device=device),
                             num_envs=1)
+
+    
     antagonist = ClassifierAgent(MLP().to(device),
                                  optim.Adam(model.parameters(), lr=1e-3),
                                  argparse.Namespace(device=device),
@@ -104,6 +108,7 @@ def main():
     # --- runner --------------------------------------------------------------
     # replace the “RL storage + PPO” block
     from pairedcl.utils.make_agent import make_agent
+    from pairedcl.utils.evaluator import Evaluator
 
     adversary_model, ppo, storage = make_agent(args, device)
 
@@ -119,6 +124,12 @@ def main():
         device=device,
     )
 
+    evaluator = Evaluator(adversary_model, class_env, T=30, batches_per_task=8, device=args.device)
+
+    # inside your training loop
+   
+    
+
     # --- training loop -------------------------------------------------------
     for epoch in range(args.epochs):
         info_env = runner.agent_rollout(adversary_model,   num_steps=1,
@@ -128,7 +139,9 @@ def main():
         log_dict = {"epoch": epoch}
         log_dict.update({f"env/{k}": v for k, v in info_env.items()})
         log_dict.update({f"cls/{k}": v for k, v in info_cls.items()})
+        eval_acc = evaluator.evaluate(agent)
         wandb.log(log_dict, step = epoch)
+        wandb.log({"eval/accuracy": eval_acc}, step=epoch)
         # if epoch % 10 == 0:
         #     print(f"[{epoch:04d}] "
         #           f"env_reward={info_env.get('reward_env',0):.3f}  "
