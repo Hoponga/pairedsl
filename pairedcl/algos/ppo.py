@@ -112,6 +112,8 @@ class PPO():
                 if self.log_grad_norm:
                     grad_norms.append(self._grad_norm())
 
+                #print(self._grad_norm())
+
                 if self.max_grad_norm is not None and self.max_grad_norm > 0:
                     nn.utils.clip_grad_norm_(self.actor_critic.parameters(),
                                             self.max_grad_norm)

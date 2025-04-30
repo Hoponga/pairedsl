@@ -2,12 +2,15 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 import pdb 
+from pairedcl.envs.task_generator import TaskGenerator, SubsetTaskGenerator
+
 
 class AdversarialRunner:
     def __init__(self, *,
                  agent,              # your supervised ClassifierAgent
                  antagonist,         # frozen copy of agent or same API
                  adversary_env,      # TaskGenerator π_E
+                 evaluator, 
                  class_env,          # ClassificationEnv
                  ppo,                # PPO updater for π_E
                  storage,            # RolloutStorageCL for π_E
@@ -18,7 +21,12 @@ class AdversarialRunner:
         self.agent         = agent
         self.antagonist    = antagonist
         self.adversary_env = adversary_env
+        self.is_subset_env = False 
+        if isinstance(self.adversary_env, SubsetTaskGenerator): 
+            self.is_subset_env = True
+
         self.class_env     = class_env
+        self.evaluator =    evaluator
         self.ppo           = ppo
         self.storage       = storage
         self.k_inner       = k_inner_updates
@@ -50,6 +58,7 @@ class AdversarialRunner:
     # ------------------------------------------------------------------
     def agent_rollout(self,
                       agent,
+                      antagonist, 
                       num_steps: int,
                       update: bool = False,
                       is_env: bool = False):
@@ -68,27 +77,28 @@ class AdversarialRunner:
         # --------  Environment‑adversary rollout (reinforcement learning)  ----
         if is_env:
             # 1) π_E proposes a TaskSpec
-            with torch.no_grad():
+            with torch.no_grad(): 
 
                 value, action_e, action_log_dist = self.adversary_env.act(self.context_obs.unsqueeze(0))
 
             # now, our action_e is of shape (M*D)
 
             task_specs = self.adversary_env.actions_to_taskspecs(action_e)
-            print(self.context_obs)
-            print(action_e)
+            #print(self.context_obs)
+            #print(action_e)
             print(f"{len(task_specs)} tasks proposed")
-            #print(task_spec)
 
             # our task spec should now be a vector over task specs 
             env_task_complexity = self._task_complexity(task_specs)
+
+
 
             # 2) Reset the classification env to that task
             obs, _ = self.class_env.reset(task_spec=task_specs)
 
             # 3) Inner‑loop supervised updates of the protagonist
             prev_obs = obs 
-            total_acc = 0 
+            total_acc_pro = total_acc_ant = 0 
             #print("here1")
 
             for _ in range(self.k_inner):
@@ -96,7 +106,7 @@ class AdversarialRunner:
                 _, action, agent_action_log_dist, _ = self.agent.act(imgs)
                 obs, reward, _, info = self.class_env.step(action)
                 accuracy, labels = info['accuracy'], info['labels']
-                total_acc += accuracy
+                total_acc_pro += accuracy
 
                 self.agent.update(imgs, labels)
                 prev_obs = obs 
@@ -108,19 +118,25 @@ class AdversarialRunner:
                 _, action, agent_action_log_dist, _ = self.antagonist.act(imgs)
                 obs, reward, _, info = self.class_env.step(action)
                 accuracy, labels = info['accuracy'], info['labels']
-                total_acc += accuracy
+                total_acc_ant += accuracy
 
                 self.antagonist.update(imgs, labels)
                 prev_obs = obs
 
             #print("here3")
             # 4) Evaluate protagonist & antagonist accuracies
+            total_acc_pro /= self.k_inner 
+            total_acc_ant /= (self.k_inner + self.antagonist_delta)
+
+
+            acc_pro = total_acc_pro 
+            acc_ant = total_acc_ant 
             
-            acc_pro, eval_complexity = self._eval_accuracy(self.agent)
-            #print(acc_pro, total_acc / self.k_inner)
-            acc_ant, eval_complexity = self._eval_accuracy(self.antagonist)
+            # acc_pro = self.evaluator.evaluate(self.agent)
+            # #print(acc_pro, total_acc / self.k_inner)
+            # acc_ant = self.evaluator.evaluate(self.antagonist)
             # For now, assume the antagonist is always perfect
-            reward  = max(acc_ant - acc_pro, 0.0)
+            reward  = max(1 - acc_pro, 0.0)
 
             # 5) Store transition for PPO
             mask = torch.ones(1, 1, device=self.device)  # never "done" in this setting
@@ -135,9 +151,13 @@ class AdversarialRunner:
 
             self.storage.insert(self.context_obs, action_e, action_log_prob, action_log_dist, value, torch.tensor([[reward]]), mask)
             with torch.no_grad(): 
+
                 self.context_obs[0] = 0.9*self.context_obs[0] + 0.1*err
                 self.context_obs[1] = 0.9*self.context_obs[1] + 0.1*env_task_complexity/1e6
                 self.context_obs[2] = 0.9*self.context_obs[2] + 0.1*gap
+                #print(torch.randn(()))
+                self.context_obs[3] = torch.randn((), device = self.device)
+                self.context_obs[4:] = action_e 
 
 
 
@@ -145,11 +165,13 @@ class AdversarialRunner:
 
             # 6) Optional PPO update
             if update and self.storage.size() >= self.rollout_len:
+                print("PPO UPDATE")
                 with torch.no_grad():
                     last_val, _, _, _ = self.adversary_env.evaluate_actions(
                         self.context_obs.unsqueeze(0), action_e.unsqueeze(0)
                     )
                 self.storage.compute_returns_and_advantages(last_val, use_gae=True)
+                self.storage.to(self.device) 
                 v_loss, p_loss, entropy, info = self.ppo.update(self.storage)
                 self.storage.after_update()
                 stats.update(dict(policy_loss=p_loss, value_loss=v_loss, entropy=entropy, info=info))
@@ -175,6 +197,30 @@ class AdversarialRunner:
 
         stats.update(dict(avg_loss=float(np.mean(losses)),
                           avg_acc=float(np.mean(accs))))
+
+        # antagonist rollout 
+        obs, _ = self.class_env.reset()
+        losses, accs = [], []
+
+        for _ in range(num_steps + self.antagonist_delta):
+            imgs, labels = next(self.class_env.iterator)
+            loss = antagonist.update(imgs, labels)
+            losses.append(loss)
+
+            with torch.no_grad():
+                _, pred, _, _ = antagonist.act(imgs)
+                accs.append((pred.to(labels.device) == labels).float().mean().item())
+        #print("EVALUATION")
+        #eval_acc, eval_complexity = self._eval_accuracy(agent)
+        #stats.update(dict(eval_acc=eval_acc, eval_complexity=eval_complexity))
+
+        stats.update(dict(avg_loss_ant=float(np.mean(losses)),
+                          avg_acc_ant=float(np.mean(accs))))
+
+        
+
+
+     
         return stats
 
     # ------------------------------------------------------------------
@@ -188,12 +234,23 @@ class AdversarialRunner:
         simply post‑process the returned statistics to keep the public API
         unchanged.
         """
-        rollout_stats = self.agent_rollout(
+        env_stats = self.agent_rollout(
             agent=self.agent,
+            antagonist=self.antagonist,
             num_steps=self.k_inner,
             update=True,         # perform PPO update when rollout buffer is full
             is_env=True          # run the environment‑adversary branch
         )
+
+        agent_stats = self.agent_rollout(
+            agent=self.agent,
+            antagonist=self.antagonist,
+            num_steps=self.k_inner,
+            update=True,         # perform PPO update when rollout buffer is full
+            is_env=False         # run the agent-adversary branch
+        )
+
+        return env_stats, agent_stats
 
         # Maintain backward‑compatibility with the original return signature
         return {

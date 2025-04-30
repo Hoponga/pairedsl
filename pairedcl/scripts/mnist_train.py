@@ -14,6 +14,7 @@ import sys, pprint
 import argparse, time, math, random
 from pathlib import Path
 import torch, torch.nn as nn, torch.optim as optim
+torch.autograd.set_detect_anomaly(True)
 import wandb
 
 # --- import your modules -----------------------------------------------------
@@ -58,7 +59,7 @@ def main():
     # p.add_argument("--device", default="cpu")
     # args = p.parse_args()
     args = get_args()
-
+    args.context_obs_shape += args.action_dim*args.max_gen_tasks
     seed_all(0)
     device = torch.device(args.device)
     run = wandb.init(                       # REQUIRED
@@ -80,8 +81,9 @@ def main():
                             num_envs=1)
 
     
-    antagonist = ClassifierAgent(MLP().to(device),
-                                 optim.Adam(model.parameters(), lr=1e-3),
+    antagonist_model = MLP().to(device)
+    antagonist = ClassifierAgent(antagonist_model,
+                                 optim.Adam(antagonist_model.parameters(), lr=1e-3),
                                  argparse.Namespace(device=device),
                                  num_envs=1)  # keep frozen / update occasionally
 
@@ -110,12 +112,16 @@ def main():
     from pairedcl.utils.make_agent import make_agent
     from pairedcl.utils.evaluator import Evaluator
 
-    adversary_model, ppo, storage = make_agent(args, device)
+    evaluator = Evaluator(args.task_type, class_env, T=args.max_gen_tasks, batches_per_task=8, device=args.device)
+
+    adversary_model, ppo, storage = make_agent(args, device, tasks = evaluator.task_specs)
+
 
     runner = AdversarialRunner(
         agent=agent,
         antagonist=antagonist,
         adversary_env=adversary_model,   # <- now the actor-critic module
+        evaluator=evaluator,
         class_env=class_env,
         ppo=ppo,
         storage=storage,
@@ -125,18 +131,13 @@ def main():
         antagonist_delta = args.antagonist_delta
     )
 
-    evaluator = Evaluator(adversary_model, class_env, T=30, batches_per_task=8, device=args.device)
-
     # inside your training loop
    
     
 
     # --- training loop -------------------------------------------------------
     for epoch in range(args.epochs):
-        info_env = runner.agent_rollout(adversary_model,   num_steps=1,
-                                        update=True,  is_env=True)
-        info_cls = runner.agent_rollout(agent, num_steps=args.k_inner,
-                                        update=False, is_env=False)
+        info_env, info_cls = runner.run()
         log_dict = {"epoch": epoch}
         log_dict.update({f"env/{k}": v for k, v in info_env.items()})
         log_dict.update({f"cls/{k}": v for k, v in info_cls.items()})
@@ -149,6 +150,7 @@ def main():
             print(f"[{epoch:04d}] "
                   f"env_reward={info_env.get('reward_env',0):.3f}  "
                   f"cls_acc={info_cls['avg_acc']:.3f}   "
+                  f"cls_acc_ant={info_cls['avg_acc_ant']:.3f}   "
                   f"eval_acc={eval_acc:.3f}   "
                   f"loss={info_cls['avg_loss']:.4f}")
 

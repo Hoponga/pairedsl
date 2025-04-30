@@ -4,40 +4,59 @@ import itertools, gym, torch
 from gym import spaces
 from torch.utils.data import DataLoader, ConcatDataset
 from typing import Sequence, Optional, Tuple, Dict, Any, List
+import math 
+import random 
 
 from .task_spec import TaskSpec, TransformSpec
 
 
 
-# Dataset from concatenated dataset with a fixed size 
 class MixtureDataset(ConcatDataset):
     """
-    A ConcatDataset that *cycles* underlying datasets so that __len__()
-    returns exactly `fixed_len`.  The DataLoader will see repeated samples
-    if `fixed_len` > total unique items.
+    A ConcatDataset that *cycles* underlying datasets up to `fixed_len`,
+    but presents them in a fixed, pre-shuffled order.
     """
-    def __init__(self, datasets: Sequence, fixed_len: int):
+    def __init__(self, datasets: Sequence[Dataset], fixed_len: int, seed: int = None):
         super().__init__(datasets)
         self.fixed_len = fixed_len
-        # pre-compute cumulative lengths for fast index remap
+
+        # cumulative lengths of each sub-dataset
         self.cums = list(itertools.accumulate(len(d) for d in datasets))
+        self.total_len = self.cums[-1]
+
+        # build a repeated index array [0,1,2,…,total_len-1, 0,1,2,…] cut to fixed_len
+        reps = math.ceil(fixed_len / self.total_len)
+        all_idx = list(range(self.total_len)) * reps
+        all_idx = all_idx[:fixed_len]
+
+        # shuffle with optional seed
+        # if seed is not None:
+        #     random.seed(seed)
+        random.shuffle(all_idx)
+
+        self.mapping = all_idx
 
     def __len__(self):
         return self.fixed_len
 
     def __getitem__(self, idx):
-        idx = idx % self.cums[-1]          # wrap around full concat length
-        # binary search to locate dataset
-        lo, hi = 0, len(self.cums)-1
+        # look up the shuffled “base” index
+        base_idx = self.mapping[idx]
+
+        # now map that base_idx into (dataset_i, sample_j)
+        # binary search on cums
+        lo, hi = 0, len(self.cums) - 1
         while lo < hi:
             mid = (lo + hi) // 2
-            if idx < self.cums[mid]:
+            if base_idx < self.cums[mid]:
                 hi = mid
             else:
                 lo = mid + 1
+
         ds_idx = lo
-        prev_cum = 0 if ds_idx == 0 else self.cums[ds_idx-1]
-        sample_idx = idx - prev_cum
+        prev_cum = 0 if ds_idx == 0 else self.cums[ds_idx - 1]
+        sample_idx = base_idx - prev_cum
+
         return self.datasets[ds_idx][sample_idx]
 
 

@@ -58,6 +58,8 @@ def get_parser() -> argparse.ArgumentParser:
     g.add_argument("--shots", type=int, default=20,
                    help="# training samples per class given to the learner")
 
+    g.add_argument("--task_type", type = str, default = "permute", help = "which task to run")
+
     # -------- generator rollout --------------------------------------------
     g = parser.add_argument_group("Environment‑generator policy (π_E)")
     g.add_argument("--env-steps", type=int, default=15,
@@ -88,7 +90,11 @@ def get_parser() -> argparse.ArgumentParser:
     default=256,
     help='Number of rollout steps for PPO')
 
-    g.add_argument('--context_obs_shape', type = int, default = 3, help = 'Number of scalar features that the adversary environment takes in as context to making a new task')
+    g.add_argument('--context_obs_shape', type = int, default = 4, help = 'Number of scalar features that the adversary environment takes in as context to making a new task')
+
+    g.add_argument('--max_gen_tasks', type = int, default = 10, help = 'Number of tasks that can be generated in one environment')
+    g.add_argument('--action_dim', type = int, default = 1, help = "Dimension of action (Currently, make sure it is equivaleent to length of param_defs in make_agent)")
+
     # -------- PPO / RL hyper‑params ----------------------------------------
     g = parser.add_argument_group("PPO / advantage settings")
     g.add_argument("--gamma", type=float, default=0.99)
@@ -146,11 +152,11 @@ def get_parser() -> argparse.ArgumentParser:
     default=250,
     help='Evaluate on test envs every n updates.')
 
-    g.add_argument("--k_inner", type=int, default=4,
+    g.add_argument("--k_inner", type=int, default=20,
                    help="batches to train classifier per task")
-    g.add_argument("--antagonist_delta", type = int, default = 4, 
+    g.add_argument("--antagonist_delta", type = int, default = 10, 
                    help="Extra number of batches to train antagonist per task")
-    g.add_argument("--rollout", type=int, default=16,
+    g.add_argument("--rollout", type=int, default=12,
                    help="tasks per PPO update")
     g.add_argument("--epochs", type=int, default=10000)
 

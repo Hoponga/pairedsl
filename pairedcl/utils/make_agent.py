@@ -3,25 +3,27 @@ from pairedcl.algos.storage import RolloutStorage
 from pairedcl.algos.ppo     import PPO
 
 import torch 
-from pairedcl.envs.task_generator import TaskGenerator 
+from pairedcl.envs.task_generator import TaskGenerator, SubsetTaskGenerator
 from pairedcl.envs.task_spec import TaskSpec, TransformSpec
 from pairedcl.utils.permute import noise_sorted_perm
 import numpy as np 
 
 
-def make_task_generator(device, args, seed = 0):
-    # our action is the noise factor for our noise_sorted_perm 
-    param_defs = [
-        dict(tname="permute", pkey="sigma", low=0.0, high=1.0)
-    ]
-    tg = TaskGenerator(param_defs,
-                       base_dataset="mnist-train",
-                       obs_dim=args.context_obs_shape,
-                       hidden_dim=64,
-                       device=device)
+def make_task_generator(device, args, seed = 0, tasks = None):
+    # # our action is the noise factor for our noise_sorted_perm 
+    # param_defs = [
+    #     dict(tname="permute", pkey="sigma", low=0.0, high=1.0)
+    # ]
+    # assert args.action_dim == len(param_defs) + 1
+    # tg = TaskGenerator(param_defs,
+    #                    base_dataset="mnist-train",
+    #                    obs_dim=args.context_obs_shape,
+    #                    hidden_dim=64,
+    #                    device=device, 
+    #                    max_gen_tasks=args.max_gen_tasks)
 
 
-    tg._permute_spec = lambda p : noise_sorted_perm(28*28, p, np.random.RandomState(seed))
+    # tg._permute_spec = lambda p : noise_sorted_perm(28*28, p, np.random.RandomState(seed))
     # Override action_to_taskspec for permuted MNIST
     # def _a2spec(self, action):
     #     seed_val = ((action[0].item() + 1)/2) * (2**20 -1)
@@ -29,10 +31,12 @@ def make_task_generator(device, args, seed = 0):
     #     ts = TaskSpec("mnist-train", [TransformSpec("permute", {"p": perm})])
     #     return ts
     # tg.action_to_taskspec = _a2spec.__get__(tg, TaskGenerator)
+
+    tg = SubsetTaskGenerator(args.context_obs_shape, tasks, device=device)
     return tg
 
-def make_agent(args, device="cpu"):
-    actor_critic = make_task_generator(device, args)
+def make_agent(args, device="cpu", tasks = None):
+    actor_critic = make_task_generator(device, args, tasks = tasks)
     
 
 
@@ -42,7 +46,7 @@ def make_agent(args, device="cpu"):
         num_steps=args.num_steps,
         num_envs=1,
         obs_shape=(args.context_obs_shape,), # what info does the adversary environment take in? 
-        action_space=actor_critic.mu_head.weight.new_zeros(actor_critic.mu_head.out_features ),  # (1,)
+        action_space=actor_critic.logit_head.weight.new_zeros(actor_critic.logit_head.out_features ),  # (1,)
         gamma=0.99,
         gae_lambda=0.95,
         device=device,

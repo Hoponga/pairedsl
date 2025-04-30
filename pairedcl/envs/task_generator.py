@@ -7,7 +7,7 @@ import gym
 
 from pairedcl.envs.task_spec import TaskSpec, TransformSpec
 from typing import Union 
-
+from torch.distributions.bernoulli import Bernoulli
 
 class TaskGenerator(nn.Module):
     """Generic policy/value network that outputs a continuous Box action of
@@ -35,12 +35,14 @@ class TaskGenerator(nn.Module):
         base_dataset: str = "mnist-train",
         device: Union[str, torch.device]= "cpu",
         max_gen_tasks = 10, # how many tasks are we allowed to select for "one environment" 
+        gate_threshold = 0.2
     ):
         super().__init__()
 
         self.param_defs   = param_defs              # list of dicts
         self.base_dataset = base_dataset
         self.device       = torch.device(device)
+        self.gate_threshold = gate_threshold
 
         self.max_gen_tasks = max_gen_tasks 
         self.single_task_action_dim = len(param_defs) + 1 # include gate 
@@ -51,10 +53,14 @@ class TaskGenerator(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
-        )
-        self.mu_head  = nn.Linear(hidden_dim,self.action_dim)
-        self.log_std  = nn.Parameter(torch.zeros(self.action_dim))
-        self.v_head   = nn.Linear(hidden_dim, 1)
+        ).to(device) 
+        self.mu_head  = nn.Linear(hidden_dim,self.action_dim).to(device)
+        self.log_std  = nn.Parameter(torch.zeros(self.action_dim)).to(device)
+        self.v_head   = nn.Linear(hidden_dim, 1).to(device)
+
+
+        self.action_space = gym.spaces.MultiDiscrete(self.max_gen_tasks)
+
         
         # Expose Gym spaces for buffers / PPO
         self.action_space = gym.spaces.Box(low=-1.0, high=1.0,
@@ -104,7 +110,8 @@ class TaskGenerator(nn.Module):
         dist = Normal(mu, std)
 
         raw = mu if deterministic else dist.rsample()   # rsample() keeps grad flow
-        action = torch.tanh(raw)
+        print(raw)
+        action = torch.sigmoid(raw)
 
         # log-probability in **squashed** (tanh) space
         log_prob_raw = dist.log_prob(raw).sum(dim=-1, keepdim=True)  # (B, 1)
@@ -196,9 +203,119 @@ class TaskGenerator(nn.Module):
         block  = self.single_task_action_dim
         for i in range(self.max_gen_tasks):
             g   = action[i*block]
-            if g < 0:                       # gate off  → skip task
+            if g < self.gate_threshold:                       # gate off  → skip task
                 continue
             pvec = action[i*block + 1 : (i+1)*block]
             #print(pvec)
             tasks.append(self.action_to_taskspec(pvec))
         return tasks
+
+
+
+class SubsetTaskGenerator(nn.Module): 
+    def __init__(self, obs_dim, task_specs, hidden_dim: int = 64, device="cpu"):
+        super().__init__()
+        self.device = torch.device(device)
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+        ).to(self.device)
+        # logits for each of the T tasks
+        self.num_tasks = len(task_specs) 
+        self.task_specs = task_specs 
+        self.logit_head = nn.Linear(hidden_dim, self.num_tasks).to(self.device)
+        # critic
+        self.v_head     = nn.Linear(hidden_dim, 1).to(self.device)
+
+        self.action_space = gym.spaces.MultiDiscrete([2]*self.num_tasks)
+
+    def forward(self, obs):
+        h = self.net(obs)
+        logits = self.logit_head(h)         # shape (B, T)
+        value  = self.v_head(h)             # shape (B, 1)
+        return logits, value
+
+    def act(self, obs, deterministic=False, temp=1.0):
+        """
+        Sample a MultiBinary mask of size T.
+        - In training: use a relaxed Bernoulli (Concrete) for gradients.
+        - In eval: threshold at 0.5 or take top-k.
+        """
+        logits, value = self.forward(obs.to(self.device))
+        probs = torch.sigmoid(logits)       # (B, T)
+        #print(probs)
+        
+        if deterministic:
+            mask = (probs > 0.5).float()
+        else:
+            # -- RELAXED BERNOUILLI (Concrete) SAMPLE for straight-through --
+            # Sample u ∼ Uniform(0,1)
+            u = torch.rand_like(probs)
+            # Gumbel noise
+            g = -torch.log(-torch.log(u + 1e-20) + 1e-20)
+            # Concrete sample: s = sigmoid((logits + g)/temp)
+            s = torch.sigmoid((logits + g) / temp)
+            # Straight-through: binarize in forward, but keep gradients via s
+            mask = (s > 0.5).float() + (s - s.detach())
+
+        # log-prob under independent Bernoulli:
+        logprob = (
+            mask * torch.log(probs + 1e-8) +
+            (1 - mask) * torch.log(1 - probs + 1e-8)
+        ).sum(dim=-1, keepdim=True)          # (B,1)
+
+        return value, mask, logprob
+
+    def actions_to_taskspecs(self, action: torch.Tensor) -> TaskSpec:
+        """Translate a (D,) action tensor into a **TaskSpec** using *param_defs*.
+
+        Each entry in *param_defs* must be a dict with keys:
+          • tname : str   ─ Transform name            (e.g. "rotate")
+          • pkey  : str   ─ Parameter key in that transform (e.g. "deg")
+          • low   : float ─ Minimum value in real range
+          • high  : float ─ Maximum value in real range
+
+
+        """
+
+        mask = action > 0.5        
+        idxs = torch.nonzero(mask, as_tuple=True)[0] 
+        return [self.task_specs[i.item()] for i in idxs]
+
+    def evaluate_actions(
+        self,
+        obs: torch.Tensor,
+        action: torch.Tensor,
+        rnn_hxs=None,   # ignored
+        masks=None      # ignored
+    ):
+        """
+        For a multi‐binary (Bernoulli) policy over T tasks.
+
+        Returns
+        -------
+        value           Tensor (B,1)
+        action_log_probs Tensor (B,1)
+        dist_entropy    Tensor scalar (mean over batch)
+        rnn_hxs         None
+        """
+        obs    = obs.to(self.device)
+        action = action.to(self.device)  # expected 0/1 floats
+
+        # 1) get the logits & value from your network
+        logits, value = self.forward(obs)  # logits: (B, T), value: (B,1)
+
+        # 2) build a Bernoulli distribution
+        probs = torch.sigmoid(logits)      # (B, T)
+        dist  = Bernoulli(probs)
+
+        # 3) log_prob of the *given* mask
+        #    sum across the T independent bits, keep shape (B,1)
+        action_log_probs = dist.log_prob(action).sum(dim=-1, keepdim=True)
+
+        # 4) entropy regularization (sum over bits, then mean over batch)
+        dist_entropy = dist.entropy().sum(dim=-1).mean()
+
+        return value, action_log_probs, dist_entropy, None 
+
+

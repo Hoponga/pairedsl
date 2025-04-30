@@ -1,6 +1,11 @@
 import torch
 from typing import List
 
+
+from pairedcl.envs.task_spec import TaskSpec, TransformSpec 
+
+
+
 class Evaluator:
     """
     Benchmark an agent on a fixed panel of T permuted-MNIST tasks.
@@ -19,9 +24,9 @@ class Evaluator:
     """
 
     def __init__(self,
-                 task_gen,
+                 task_type,
                  class_env,
-                 T: int = 20,
+                 T: int = 10,
                  batches_per_task: int = 5,
                  device="cpu"):
         self.device = torch.device(device)
@@ -29,12 +34,18 @@ class Evaluator:
         self.batches_per_task = batches_per_task
 
         # ---- create and store T TaskSpecs ----------------------------------
+        self.T = T 
         self.task_specs: List[TaskSpec] = []
-        for _ in range(T):
-            rand_action = torch.empty(task_gen.single_task_action_dim -1 , # ignore the gate 
-                                      device=self.device).uniform_(0, 1)
-            self.task_specs.append(task_gen.action_to_taskspec(rand_action))
+        assert task_type == "permute" 
 
+        for _ in range(T):
+            self.task_specs.append(self._create_permutation_task())
+
+
+            
+    def _create_permutation_task(self): 
+        random_perm = torch.randperm(28*28) 
+        return TaskSpec("mnist-train", [TransformSpec("permute", {"p": random_perm})])
     # -----------------------------------------------------------------------
 
     # "REDUCE THE PROBLEM" @JIANTAO JIAO 

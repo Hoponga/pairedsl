@@ -182,19 +182,20 @@ class RolloutStorage:
 
         last_value : V(s_T) for bootstrap (shape [num_envs, 1])
         """
-        if use_gae:
-            gae = torch.zeros_like(last_value)
-            for t in reversed(range(self.step)):
-                delta = (self.rewards[t] +
-                         self.gamma * last_value * self.masks[t] -
-                         self.values[t])
-                gae = delta + self.gamma * self.gae_lambda * self.masks[t] * gae
-                self.advantages[t] = gae
-                self.returns[t]    = self.advantages[t] + self.values[t]
-                last_value = self.values[t]
-        else:  # plain discounted return
-            running_return = last_value
-            for t in reversed(range(self.step)):
-                running_return = self.rewards[t] + self.gamma * running_return * self.masks[t]
-                self.returns[t] = running_return
-            self.advantages = self.returns - self.values
+        with torch.no_grad(): 
+            if use_gae:
+                gae = torch.zeros_like(last_value)
+                for t in reversed(range(self.step)):
+                    delta = (self.rewards[t] +
+                            self.gamma * last_value * self.masks[t] -
+                            self.values[t])
+                    gae = delta + self.gamma * self.gae_lambda * self.masks[t] * gae
+                    self.advantages[t] = gae
+                    self.returns[t]    = self.advantages[t] + self.values[t]
+                    last_value = self.values[t]
+            else:  # plain discounted return
+                running_return = last_value
+                for t in reversed(range(self.step)):
+                    running_return = self.rewards[t] + self.gamma * running_return * self.masks[t]
+                    self.returns[t] = running_return
+                self.advantages = self.returns - self.values
