@@ -32,7 +32,7 @@ class TransformSpec:
         fn = _transform_registry[self.name]
         return fn(**self.params) if callable(fn) else fn
 
-
+from dataclasses import dataclass, field
 
 # Task specification -- abstraction for a UED parameter selection -- 
 # given a base dataset, sequentially apply a list of transforms o n this dataset by using the TransformedDataset wrapper 
@@ -41,16 +41,19 @@ class TaskSpec:
     dataset_id: str                        # e.g. "mnist-train", "core50-s10"
     transforms: List[TransformSpec]        # order matters
     class_subset: Optional[Sequence[int]] = None
+    base_ds: Optional[Dataset] = field(init=False, default = None, repr=False)
     seed: int = 0                          # reproducibility
 
     def make_dataset(self, *, train: bool = True) -> Dataset:
-        base_ds = get_base_dataset(self.dataset_id, train=train, seed=self.seed)
+        if self.base_ds is None: 
+            object.__setattr__(self, 'base_ds', get_base_dataset(self.dataset_id, train=train, seed=self.seed))
+
         if self.class_subset is not None:                       # filter classes
-            idx = [i for i, y in enumerate(base_ds.targets) if y in self.class_subset]
-            base_ds = torch.utils.data.Subset(base_ds, idx)
+            idx = [i for i, y in enumerate(self.base_ds.targets) if y in self.class_subset]
+            self.base_ds = torch.utils.data.Subset(base_ds, idx)
 
         transform_pipeline = T.Compose([ts.build() for ts in self.transforms])
-        return _TransformedDataset(base_ds, transform_pipeline)
+        return _TransformedDataset(self.base_ds, transform_pipeline)
 
 
 

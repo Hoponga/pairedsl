@@ -85,13 +85,10 @@ class AdversarialRunner:
 
             task_specs = self.adversary_env.actions_to_taskspecs(action_e)
             #print(self.context_obs)
-            #print(action_e)
-            print(f"{len(task_specs)} tasks proposed")
+            #print(action_e)       
 
             # our task spec should now be a vector over task specs 
             env_task_complexity = self._task_complexity(task_specs)
-
-
 
             # 2) Reset the classification env to that task
             obs, _ = self.class_env.reset(task_spec=task_specs)
@@ -100,18 +97,24 @@ class AdversarialRunner:
             prev_obs = obs 
             total_acc_pro = total_acc_ant = 0 
             #print("here1")
-
+            total_acc_pro = 0
+            acc_pro_i = 0
+            acc_pro_f = 0
             for _ in range(self.k_inner):
-                imgs = prev_obs 
-                _, action, agent_action_log_dist, _ = self.agent.act(imgs)
-                obs, reward, _, info = self.class_env.step(action)
-                accuracy, labels = info['accuracy'], info['labels']
-                total_acc_pro += accuracy
+                with torch.no_grad(): 
+                    imgs = prev_obs 
+                    _, action, agent_action_log_dist, _ = self.agent.act(imgs)
+                    #print(len(self.class_env.task_specs))
+                    obs, reward, _, info = self.class_env.step(action)
+                    accuracy, labels = info['accuracy'], info['labels']
+                    if acc_pro_i == 0: 
+                        acc_pro_i = accuracy
+                    acc_pro_f = accuracy 
+                    total_acc_pro += accuracy
 
-                self.agent.update(imgs, labels)
-                prev_obs = obs 
+                    #self.agent.update(imgs, labels)
+                    prev_obs = obs 
 
-            
             #print("here2")
             for _ in range(self.k_inner + self.antagonist_delta): 
                 imgs = prev_obs 
@@ -128,7 +131,6 @@ class AdversarialRunner:
             total_acc_pro /= self.k_inner 
             total_acc_ant /= (self.k_inner + self.antagonist_delta)
 
-
             acc_pro = total_acc_pro 
             acc_ant = total_acc_ant 
             
@@ -136,7 +138,8 @@ class AdversarialRunner:
             # #print(acc_pro, total_acc / self.k_inner)
             # acc_ant = self.evaluator.evaluate(self.antagonist)
             # For now, assume the antagonist is always perfect
-            reward  = max(1 - acc_pro, 0.0)
+            reward  = max(1 - total_acc_pro, 0.0)
+            print(f"{len(task_specs)} tasks proposed with reward {reward}")
 
             # 5) Store transition for PPO
             mask = torch.ones(1, 1, device=self.device)  # never "done" in this setting

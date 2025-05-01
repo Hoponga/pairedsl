@@ -9,55 +9,45 @@ import random
 
 from .task_spec import TaskSpec, TransformSpec
 
+import math, random, bisect
+from torch.utils.data import Dataset
 
+class MixtureDataset(Dataset):
+    """
+    A fixed‐length dataset that draws IID (with replacement) from the union
+    of multiple datasets, pre‐shuffling once at construction.
 
-class MixtureDataset(ConcatDataset):
+    Each sample is chosen by:
+      1) picking a flat index in [0, total_len) uniformly at random
+      2) mapping that flat index back to (dataset_i, sample_j)
     """
-    A ConcatDataset that *cycles* underlying datasets up to `fixed_len`,
-    but presents them in a fixed, pre-shuffled order.
-    """
-    def __init__(self, datasets: Sequence[Dataset], fixed_len: int, seed: int = None):
-        super().__init__(datasets)
+
+    def __init__(self, datasets, fixed_len, seed=None):
+        super().__init__()
+        self.datasets  = list(datasets)
         self.fixed_len = fixed_len
 
-        # cumulative lengths of each sub-dataset
-        self.cums = list(itertools.accumulate(len(d) for d in datasets))
-        self.total_len = self.cums[-1]
+        # 1) cumulative lengths and total
+        lengths = [len(d) for d in self.datasets]
+        self.cums  = list(itertools.accumulate(lengths))
+        total     = self.cums[-1]
 
-        # build a repeated index array [0,1,2,…,total_len-1, 0,1,2,…] cut to fixed_len
-        reps = math.ceil(fixed_len / self.total_len)
-        all_idx = list(range(self.total_len)) * reps
-        all_idx = all_idx[:fixed_len]
+        flat_idxs = random.choices(range(total), k=fixed_len)
 
-        # shuffle with optional seed
-        # if seed is not None:
-        #     random.seed(seed)
-        random.shuffle(all_idx)
-
-        self.mapping = all_idx
+        # 3) map each flat index → (dataset_i, sample_j)
+        self.mapping = []
+        for idx in flat_idxs:
+            ds_i = bisect.bisect_right(self.cums, idx)
+            prev = self.cums[ds_i-1] if ds_i > 0 else 0
+            sample_j = idx - prev
+            self.mapping.append((ds_i, sample_j))
 
     def __len__(self):
         return self.fixed_len
 
     def __getitem__(self, idx):
-        # look up the shuffled “base” index
-        base_idx = self.mapping[idx]
-
-        # now map that base_idx into (dataset_i, sample_j)
-        # binary search on cums
-        lo, hi = 0, len(self.cums) - 1
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if base_idx < self.cums[mid]:
-                hi = mid
-            else:
-                lo = mid + 1
-
-        ds_idx = lo
-        prev_cum = 0 if ds_idx == 0 else self.cums[ds_idx - 1]
-        sample_idx = base_idx - prev_cum
-
-        return self.datasets[ds_idx][sample_idx]
+        ds_i, sample_j = self.mapping[idx]
+        return self.datasets[ds_i][sample_j]
 
 
 
@@ -81,7 +71,8 @@ class ClassificationEnv(gym.Env):
         self.batch_size = batch_size
         self.device     = torch.device(device)
         self.shuffle    = shuffle
-        self.default_task_spec = TaskSpec("mnist-train", [TransformSpec("permute", {"p": torch.arange(28*28)})])
+        self.task_specs = task_spec 
+        #self.default_task_spec = TaskSpec("mnist-train", [TransformSpec("permute", {"p": torch.arange(28*28)})])
       
 
         # allow multiple task specs to be passed in as a single arg 
@@ -98,7 +89,8 @@ class ClassificationEnv(gym.Env):
         elif not isinstance(specs, (list, tuple)):
             specs = list(specs)
         if not specs: 
-            return self._init_from_specs(self.default_task_spec)
+            return self._init_from_specs(self.task_specs) # if nothing is given just propose all the tasks 
+            #return self._init_from_specs(self.default_task_spec)
         self.task_specs: List[TaskSpec] = specs
 
         # Build datasets and concat
@@ -147,9 +139,7 @@ class ClassificationEnv(gym.Env):
         task_spec: Optional[TaskSpec | Sequence[TaskSpec]] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """Optionally swap in new TaskSpec(s); return first observation batch."""
-        if task_spec is not None:
-            self._init_from_specs(task_spec)
+        self._init_from_specs(task_spec or self.task_specs) # holy another goated one liner 
 
         self.obs, self.labels = next(self.iterator)
         self.obs, self.labels = self.obs.to(self.device), self.labels.to(self.device)

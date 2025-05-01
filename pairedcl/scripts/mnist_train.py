@@ -34,7 +34,7 @@ class MLP(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(in_dim, in_dim), # anti permutation layer??!?!!?!?!?
+            #nn.Linear(in_dim, in_dim), # anti permutation layer??!?!!?!?!?
             nn.Linear(in_dim, 256), nn.ReLU(),
             nn.Linear(256, 256), nn.ReLU(),
             nn.Linear(256, num_classes)
@@ -71,7 +71,7 @@ def main():
 
     # a dummy identity TaskSpec to bootstrap env
     id_spec = TaskSpec("mnist-train", transforms=[])
-    class_env = ClassificationEnv(id_spec, batch_size=64, device=device)
+    class_env = ClassificationEnv(id_spec, batch_size=256, device=device)
 
     # --- protagonists --------------------------------------------------------
     model = MLP().to(device)
